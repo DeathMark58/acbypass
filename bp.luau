@@ -1,21 +1,21 @@
 --[[
-    COMBINED AC BYPASS v1.0
+    STEALTH AC BYPASS v2.0
     
     Bypasses BOTH:
-    1. Labyrinth AC (remote-based detection)
-    2. Adonis AC (memory-based detection)
+    1. Labyrinth AC - WITHOUT using __namecall hook (uses hookfunction on RemoteEvent)
+    2. Adonis AC - getgc + hookfunction approach
+    
+    This version avoids metatable hooks entirely to bypass namecall detection!
     
     Load this BEFORE your main script!
-    
-    Usage:
-        loadstring(game:HttpGet("URL"))()
 ]]
 
-local CombinedBypass = {
+local StealthBypass = {
     Hooks = {},
     FlagFunction = nil,
     TerminateFunction = nil,
-    IsVerbose = false,  -- Set to true for debug logs
+    IsVerbose = false,
+    OriginalFireServer = nil,
 }
 
 local Status = {
@@ -37,72 +37,14 @@ local function safeWrap(func)
 end
 
 local function log(...)
-    if CombinedBypass.IsVerbose then
-        print("[AC Bypass]", ...)
+    if StealthBypass.IsVerbose then
+        print("[Stealth Bypass]", ...)
     end
 end
 
 -- ============================================
--- PART 1: LABYRINTH AC BYPASS
--- Hooks __namecall to block detection remotes
--- ============================================
-local function bypassLabyrinth()
-    if not getrawmetatable then
-        log("getrawmetatable not available")
-        return false
-    end
-    
-    local game = cloneref and cloneref(game) or game
-    local mt = getrawmetatable(game)
-    if not mt then return false end
-    
-    local oldNamecall = mt.__namecall
-    
-    -- Make writable
-    if setreadonly then
-        pcall(setreadonly, mt, false)
-    end
-    
-    -- Install hook
-    mt.__namecall = safeWrap(function(self, ...)
-        local method = getnamecallmethod and getnamecallmethod()
-        local args = {...}
-        
-        if method == "FireServer" then
-            local remoteName = ""
-            pcall(function() remoteName = self.Name end)
-            
-            -- Block Labyrinth detection reports
-            if remoteName == "__LABYRINTH__" then
-                if type(args[1]) == "nil" and type(args[2]) == "table" then
-                    if args[2].r then
-                        log("Blocked Labyrinth detection:", args[2].r)
-                        return -- DROP
-                    end
-                end
-            end
-            
-            -- Allow heartbeat through
-            if remoteName == "__LABYRINTH__HANDSHAKE__" then
-                return oldNamecall(self, ...)
-            end
-        end
-        
-        return oldNamecall(self, ...)
-    end)
-    
-    -- Restore readonly
-    if setreadonly then
-        pcall(setreadonly, mt, true)
-    end
-    
-    Status.LabyrinthBypassed = true
-    return true
-end
-
--- ============================================
--- PART 2: ADONIS AC BYPASS
--- Hooks internal detection functions via getgc
+-- PART 1: ADONIS AC BYPASS (RUN FIRST!)
+-- Must disable Adonis BEFORE any hooks
 -- ============================================
 local function bypassAdonis()
     if not getgc or not hookfunction then
@@ -123,8 +65,8 @@ local function bypassAdonis()
             local killMethod = rawget(item, 'Kill')
             
             -- Hook Detected function
-            if typeof(detectionMethod) == 'function' and not CombinedBypass.FlagFunction then
-                CombinedBypass.FlagFunction = detectionMethod
+            if typeof(detectionMethod) == 'function' and not StealthBypass.FlagFunction then
+                StealthBypass.FlagFunction = detectionMethod
                 
                 local success = pcall(function()
                     hookfunction(detectionMethod, safeWrap(function(trigger, details, preventCrash)
@@ -136,7 +78,7 @@ local function bypassAdonis()
                 end)
                 
                 if success then
-                    table.insert(CombinedBypass.Hooks, detectionMethod)
+                    table.insert(StealthBypass.Hooks, detectionMethod)
                     Status.AdonisDetectionDisabled = true
                 end
             end
@@ -145,9 +87,9 @@ local function bypassAdonis()
             if typeof(killMethod) == 'function' 
                and rawget(item, 'Variables') 
                and rawget(item, 'Process') 
-               and not CombinedBypass.TerminateFunction then
+               and not StealthBypass.TerminateFunction then
                 
-                CombinedBypass.TerminateFunction = killMethod
+                StealthBypass.TerminateFunction = killMethod
                 
                 local success = pcall(function()
                     hookfunction(killMethod, safeWrap(function(cause)
@@ -157,7 +99,7 @@ local function bypassAdonis()
                 end)
                 
                 if success then
-                    table.insert(CombinedBypass.Hooks, killMethod)
+                    table.insert(StealthBypass.Hooks, killMethod)
                     Status.AdonisKillBlocked = true
                 end
             end
@@ -175,7 +117,7 @@ local function bypassAdonis()
                     local levelOrFunc, info = ...
                     
                     -- If checking our hooked function, yield to hide it
-                    if CombinedBypass.FlagFunction and levelOrFunc == CombinedBypass.FlagFunction then
+                    if StealthBypass.FlagFunction and levelOrFunc == StealthBypass.FlagFunction then
                         log("debug.info check intercepted")
                         return coroutine.yield(coroutine.running())
                     end
@@ -199,8 +141,150 @@ local function bypassAdonis()
 end
 
 -- ============================================
+-- PART 2: LABYRINTH AC BYPASS (STEALTH VERSION)
+-- Uses hookfunction instead of __namecall
+-- NO METATABLE MODIFICATION!
+-- ============================================
+local function bypassLabyrinth()
+    if not hookfunction then
+        log("hookfunction not available, trying alternative...")
+        return bypassLabyrinthAlternative()
+    end
+    
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    
+    -- Method 1: Hook Instance.new to catch remote creation
+    local oldInstanceNew
+    pcall(function()
+        oldInstanceNew = hookfunction(Instance.new, safeWrap(function(className, parent)
+            local instance = oldInstanceNew(className, parent)
+            
+            -- If it's a RemoteEvent, hook its FireServer
+            if className == "RemoteEvent" and instance then
+                task.defer(function()
+                    pcall(function()
+                        local oldFire = instance.FireServer
+                        hookfunction(oldFire, safeWrap(function(self, ...)
+                            local name = ""
+                            pcall(function() name = self.Name end)
+                            
+                            if name == "__LABYRINTH__" then
+                                local args = {...}
+                                if type(args[1]) == "nil" and type(args[2]) == "table" and args[2].r then
+                                    log("Blocked Labyrinth (new remote):", args[2].r)
+                                    return
+                                end
+                            end
+                            return oldFire(self, ...)
+                        end))
+                    end)
+                end)
+            end
+            
+            return instance
+        end))
+    end)
+    
+    -- Method 2: Find existing Labyrinth remote and hook it
+    local function hookExistingRemote()
+        local labyrinthRemote = ReplicatedStorage:FindFirstChild("__LABYRINTH__")
+        if labyrinthRemote and labyrinthRemote:IsA("RemoteEvent") then
+            pcall(function()
+                local oldFireServer = labyrinthRemote.FireServer
+                StealthBypass.OriginalFireServer = oldFireServer
+                
+                hookfunction(oldFireServer, safeWrap(function(self, ...)
+                    local args = {...}
+                    
+                    -- Block detection reports
+                    if type(args[1]) == "nil" and type(args[2]) == "table" then
+                        if args[2].r then
+                            log("Blocked Labyrinth detection:", args[2].r)
+                            return -- DROP
+                        end
+                    end
+                    
+                    return oldFireServer(self, ...)
+                end))
+            end)
+            
+            Status.LabyrinthBypassed = true
+            log("Hooked existing __LABYRINTH__ remote")
+            return true
+        end
+        return false
+    end
+    
+    -- Try to hook existing remote
+    if hookExistingRemote() then
+        return true
+    end
+    
+    -- If remote doesn't exist yet, wait for it
+    task.spawn(function()
+        local remote = ReplicatedStorage:WaitForChild("__LABYRINTH__", 30)
+        if remote then
+            hookExistingRemote()
+        end
+    end)
+    
+    -- Also use ChildAdded to catch it
+    ReplicatedStorage.ChildAdded:Connect(function(child)
+        if child.Name == "__LABYRINTH__" and child:IsA("RemoteEvent") then
+            task.defer(hookExistingRemote)
+        end
+    end)
+    
+    Status.LabyrinthBypassed = true
+    return true
+end
+
+-- Alternative method if hookfunction fails
+local function bypassLabyrinthAlternative()
+    -- Use __namecall but only AFTER Adonis is disabled
+    if not getrawmetatable then
+        return false
+    end
+    
+    local game = cloneref and cloneref(game) or game
+    local mt = getrawmetatable(game)
+    if not mt then return false end
+    
+    local oldNamecall = mt.__namecall
+    
+    if setreadonly then
+        pcall(setreadonly, mt, false)
+    end
+    
+    mt.__namecall = safeWrap(function(self, ...)
+        local method = getnamecallmethod and getnamecallmethod()
+        local args = {...}
+        
+        if method == "FireServer" then
+            local remoteName = ""
+            pcall(function() remoteName = self.Name end)
+            
+            if remoteName == "__LABYRINTH__" then
+                if type(args[1]) == "nil" and type(args[2]) == "table" and args[2].r then
+                    log("Blocked Labyrinth (namecall):", args[2].r)
+                    return
+                end
+            end
+        end
+        
+        return oldNamecall(self, ...)
+    end)
+    
+    if setreadonly then
+        pcall(setreadonly, mt, true)
+    end
+    
+    Status.LabyrinthBypassed = true
+    return true
+end
+
+-- ============================================
 -- PART 3: GLOBAL BAIT PROTECTION
--- Prevents accidental triggering of bait functions
 -- ============================================
 local function protectGlobalBait()
     local safeFunc = function() return "Protected" end
@@ -212,29 +296,29 @@ local function protectGlobalBait()
 end
 
 -- ============================================
--- INITIALIZATION
+-- INITIALIZATION (ORDER MATTERS!)
 -- ============================================
 local function init()
-    print("[AC Bypass] Initializing combined bypass...")
+    print("[Stealth Bypass] v2.0 - Initializing...")
     
-    -- Bypass Labyrinth AC
-    local labSuccess = bypassLabyrinth()
-    print("[AC Bypass] Labyrinth:", labSuccess and "✓" or "✗")
-    
-    -- Bypass Adonis AC  
+    -- STEP 1: Bypass Adonis FIRST (disables namecall detection)
     local adonisSuccess = bypassAdonis()
-    print("[AC Bypass] Adonis:", adonisSuccess and "✓" or "✗")
+    print("[Stealth Bypass] Adonis:", adonisSuccess and "✓" or "✗")
     
-    -- Protect global bait
+    -- STEP 2: Now safe to bypass Labyrinth
+    local labSuccess = bypassLabyrinth()
+    print("[Stealth Bypass] Labyrinth:", labSuccess and "✓" or "✗")
+    
+    -- STEP 3: Protect global bait
     protectGlobalBait()
-    print("[AC Bypass] Global bait: ✓")
+    print("[Stealth Bypass] Global bait: ✓")
     
-    -- Print status
+    -- Print final status
     print(string.format(
-        "[AC Bypass] Status: Labyrinth=%s | Adonis Detection=%s | Adonis Kill=%s | Debug.info=%s",
-        tostring(Status.LabyrinthBypassed),
+        "[Stealth Bypass] Final: Adonis=%s,%s | Labyrinth=%s | Debug=%s",
         tostring(Status.AdonisDetectionDisabled),
         tostring(Status.AdonisKillBlocked),
+        tostring(Status.LabyrinthBypassed),
         tostring(Status.DebugInfoHooked)
     ))
     
@@ -244,15 +328,15 @@ end
 -- ============================================
 -- API
 -- ============================================
-function CombinedBypass.setVerbose(enabled)
-    CombinedBypass.IsVerbose = enabled
+function StealthBypass.setVerbose(enabled)
+    StealthBypass.IsVerbose = enabled
 end
 
-function CombinedBypass.getStatus()
+function StealthBypass.getStatus()
     return Status
 end
 
 -- Auto-init
 init()
 
-return CombinedBypass
+return StealthBypass
