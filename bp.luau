@@ -16,7 +16,7 @@
 local StealthBypass = {
     FlagFunction = nil,
     TerminateFunction = nil,
-    IsVerbose = true,
+    IsVerbose = false,
     MonitorConnection = nil,
 }
 
@@ -177,23 +177,81 @@ local function bypassLabyrinth()
     
     mt.__namecall = safeWrap(function(self, ...)
         local method = getnamecallmethod and getnamecallmethod()
+        local args = {...}
         
-        -- Block both FireServer AND InvokeServer
+        -- RemoteSpy: Log all remote calls when verbose
+        if StealthBypass.IsVerbose and (method == "FireServer" or method == "InvokeServer") then
+            local remoteName = ""
+            local remoteClass = ""
+            local callerScript = "Unknown"
+            
+            pcall(function() remoteName = self.Name end)
+            pcall(function() remoteClass = self.ClassName end)
+            
+            -- Try to get caller script info
+            pcall(function()
+                local info = debug.info(4, "s") -- 4 levels up in call stack
+                if info then
+                    callerScript = tostring(info)
+                end
+            end)
+            
+            -- Format arguments for display
+            local argsPreview = ""
+            pcall(function()
+                local parts = {}
+                for i, arg in ipairs(args) do
+                    if i > 3 then 
+                        table.insert(parts, "...") 
+                        break 
+                    end
+                    local t = typeof(arg)
+                    if t == "string" then
+                        table.insert(parts, '"' .. string.sub(arg, 1, 20) .. '"')
+                    elseif t == "table" then
+                        -- Show table keys
+                        local keys = {}
+                        for k, _ in pairs(arg) do
+                            table.insert(keys, tostring(k))
+                            if #keys >= 3 then break end
+                        end
+                        table.insert(parts, "{" .. table.concat(keys, ",") .. "}")
+                    elseif t == "nil" then
+                        table.insert(parts, "nil")
+                    else
+                        table.insert(parts, t .. ":" .. tostring(arg):sub(1, 15))
+                    end
+                end
+                argsPreview = table.concat(parts, ", ")
+            end)
+            
+            -- Check if this will be blocked
+            local isBlocked = (remoteName == "__LABYRINTH__" or remoteName == "__LABYRINTH__HANDSHAKE__")
+            local status = isBlocked and "🚫 BLOCKED" or "✅ ALLOWED"
+            
+            print(string.format(
+                "[RemoteSpy] %s | %s:%s | Args(%s) | From: %s",
+                status,
+                method,
+                remoteName,
+                argsPreview,
+                callerScript
+            ))
+        end
+        
+        -- Block both FireServer AND InvokeServer to Labyrinth
         if method == "FireServer" or method == "InvokeServer" then
             local remoteName = ""
             pcall(function() remoteName = self.Name end)
             
-            -- Block Labyrinth detection reports
-            if remoteName == "__LABYRINTH__" then
-                local args = {...}
-                if type(args[1]) == "nil" and type(args[2]) == "table" then
-                    if args[2].r then
-                        log("Blocked Labyrinth:", args[2].r)
-                        return -- DROP
-                    end
-                end
-                -- Block ANY call to __LABYRINTH__ as safety
-                log("Blocked unknown Labyrinth call")
+            -- Block ALL Labyrinth remotes
+            if remoteName == "__LABYRINTH__" or remoteName == "__LABYRINTH__HANDSHAKE__" then
+                return -- DROP silently
+            end
+            
+            -- Block any remote containing LABYRINTH in name
+            if string.find(remoteName, "LABYRINTH") then
+                log("Blocked suspicious remote:", remoteName)
                 return
             end
         end
