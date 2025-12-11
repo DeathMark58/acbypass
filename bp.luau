@@ -16,7 +16,7 @@
 local StealthBypass = {
     FlagFunction = nil,
     TerminateFunction = nil,
-    IsVerbose = false,
+    IsVerbose = true,
     MonitorConnection = nil,
 }
 
