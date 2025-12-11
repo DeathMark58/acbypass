@@ -154,17 +154,17 @@ local function bypassLabyrinth()
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     
     -- Method 1: Hook Instance.new to catch remote creation
-    local oldInstanceNew
     pcall(function()
-        oldInstanceNew = hookfunction(Instance.new, safeWrap(function(className, parent)
-            local instance = oldInstanceNew(className, parent)
+        local originalInstanceNew
+        originalInstanceNew = hookfunction(Instance.new, safeWrap(function(className, parent)
+            local instance = originalInstanceNew(className, parent)
             
             -- If it's a RemoteEvent, hook its FireServer
             if className == "RemoteEvent" and instance then
                 task.defer(function()
                     pcall(function()
-                        local oldFire = instance.FireServer
-                        hookfunction(oldFire, safeWrap(function(self, ...)
+                        local originalRemoteFire
+                        originalRemoteFire = hookfunction(instance.FireServer, safeWrap(function(self, ...)
                             local name = ""
                             pcall(function() name = self.Name end)
                             
@@ -175,7 +175,7 @@ local function bypassLabyrinth()
                                     return
                                 end
                             end
-                            return oldFire(self, ...)
+                            return originalRemoteFire(self, ...)
                         end))
                     end)
                 end)
@@ -190,10 +190,9 @@ local function bypassLabyrinth()
         local labyrinthRemote = ReplicatedStorage:FindFirstChild("__LABYRINTH__")
         if labyrinthRemote and labyrinthRemote:IsA("RemoteEvent") then
             pcall(function()
-                local oldFireServer = labyrinthRemote.FireServer
-                StealthBypass.OriginalFireServer = oldFireServer
-                
-                hookfunction(oldFireServer, safeWrap(function(self, ...)
+                -- hookfunction returns the ORIGINAL function
+                local originalFire
+                originalFire = hookfunction(labyrinthRemote.FireServer, safeWrap(function(self, ...)
                     local args = {...}
                     
                     -- Block detection reports
@@ -204,8 +203,11 @@ local function bypassLabyrinth()
                         end
                     end
                     
-                    return oldFireServer(self, ...)
+                    -- Call the ORIGINAL function (returned by hookfunction)
+                    return originalFire(self, ...)
                 end))
+                
+                StealthBypass.OriginalFireServer = originalFire
             end)
             
             Status.LabyrinthBypassed = true
