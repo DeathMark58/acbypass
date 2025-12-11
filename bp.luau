@@ -178,7 +178,8 @@ local function bypassLabyrinth()
     mt.__namecall = safeWrap(function(self, ...)
         local method = getnamecallmethod and getnamecallmethod()
         
-        if method == "FireServer" then
+        -- Block both FireServer AND InvokeServer
+        if method == "FireServer" or method == "InvokeServer" then
             local remoteName = ""
             pcall(function() remoteName = self.Name end)
             
@@ -191,6 +192,9 @@ local function bypassLabyrinth()
                         return -- DROP
                     end
                 end
+                -- Block ANY call to __LABYRINTH__ as safety
+                log("Blocked unknown Labyrinth call")
+                return
             end
         end
         
